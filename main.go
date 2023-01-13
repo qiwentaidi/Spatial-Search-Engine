@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -101,7 +102,7 @@ type FOFAJsonResult struct {
 // 设置窗口界面
 func myApp() {
 	a := app.New()
-	w := a.NewWindow("Spatial Search Engine 1.0 by qiwent@idi")
+	w := a.NewWindow("Spatial Search Engine 1.1 by qiwent@idi")
 	w.Resize(fyne.NewSize(800, 500))
 	/*===================================================读取配置接口========================================================*/
 	path, err := os.Getwd()
@@ -216,7 +217,6 @@ func myApp() {
 	ADSearchHunter.Append(item)
 	/*===========================================================END读取配置====================================================*/
 	/*===========================================================组件====================================================*/
-	statusCode := widget.NewSelect([]string{"全部", "101", "200", "202", "203", "204", "301", "302", "303", "307", "308", "403", "404"}, nil)
 	searchTime := widget.NewSelect([]string{"最近一个月", "最近半年", "最近一年"}, nil)
 	searchTime.SetSelected("最近一个月")
 	hPageNum := widget.NewSelect([]string{"10条/页", "50条/页", "100条/页"}, nil)
@@ -229,7 +229,6 @@ func myApp() {
 	currentPageFOFA.Text = "1"
 	assets := widget.NewSelect([]string{"全部资产", "web服务资产"}, nil)
 	assets.SetSelected("web服务资产")
-	statusCode.SetSelected("200")
 	resultHunterData := [][]string{
 		{"序号", "URL", "IP", "端口/服务", "域名", "应用/组件", "站点标题", "状态码", "ICP备案企业", "地理位置", "更新时间"},
 	}
@@ -289,9 +288,18 @@ func myApp() {
 		resultFOFAShow.SetRowHeight(i, 40)
 	}
 	hunterSurplus := widget.NewLabel("")
-	hunterReturnCode := widget.NewLabel("")
+	hSearchDataSize := widget.NewLabel("")
 	selfLevel := widget.NewLabel("")
 	searchDataSize := widget.NewLabel("")
+	deDuplication := "false"
+	dataDeDuplication := widget.NewCheck("数据去重", func(b bool) {
+		if b {
+			deDuplication = "true"
+		} else {
+			deDuplication = "false"
+		}
+	})
+	//ipTag := widget.NewSelect([]string{"11", "22"}, nil)
 	/*===========================================================END====================================================*/
 	/*===========================================================hunter搜索接口====================================================*/
 	search1 := widget.NewEntry()
@@ -303,7 +311,7 @@ func myApp() {
 		beforeMonth := t.AddDate(0, -1, 0)      // 一个月前的日期
 		beforeHalfyear := t.AddDate(0, 0, -179) // 半年前的日期
 		beforeYear := t.AddDate(-1, 0, 0)       // 一年前的日期
-		var selectTime, selectCode, selectPage, selectAssets string
+		var selectTime, selectPage, selectAssets string
 		/*======================================================标签内容获取===================================================*/
 		switch searchTime.Selected {
 		case "最近一个月":
@@ -312,34 +320,6 @@ func myApp() {
 			selectTime = beforeHalfyear.Format("2006-01-02")
 		case "最近一年":
 			selectTime = beforeYear.Format("2006-01-02")
-		}
-		switch statusCode.Selected {
-		case "全部":
-			selectCode = "0"
-		case "101":
-			selectCode = "101"
-		case "200":
-			selectCode = "200"
-		case "202":
-			selectCode = "202"
-		case "203":
-			selectCode = "203"
-		case "204":
-			selectCode = "204"
-		case "301":
-			selectCode = "301"
-		case "302":
-			selectCode = "302"
-		case "303":
-			selectCode = "303"
-		case "307":
-			selectCode = "307"
-		case "308":
-			selectCode = "308"
-		case "403":
-			selectCode = "403"
-		case "404":
-			selectCode = "404"
 		}
 		switch hPageNum.Selected {
 		case "10条/页":
@@ -357,8 +337,8 @@ func myApp() {
 		}
 		/*======================================================END===================================================*/
 		addressHunter := hunterApi.Text + "/openApi/search?api-key=" + hunterKey.Text + "&search=" + hunterBaseEncode(search1.Text) + "&page=" +
-			currentPageHunter.Text + "&page_size=" + selectPage + "&is_web=" + selectAssets + "&status_code=" + selectCode + "&start_time=" +
-			selectTime + "&end_time=" + t.Format("2006-01-02")
+			currentPageHunter.Text + "&page_size=" + selectPage + "&is_web=" + selectAssets + "&port_filter=" + deDuplication + "&start_time=" + selectTime + "&end_time=" + t.Format("2006-01-02")
+		fmt.Printf("addressHunter: %v\n", addressHunter)
 		r, err := http.Get(addressHunter)
 		if err != nil {
 			panic(err)
@@ -389,8 +369,8 @@ func myApp() {
 			resultHunterShow.Refresh()
 			hunterSurplus.Text = hunterJR.Data.RestQuota
 			hunterSurplus.Refresh()
-			hunterReturnCode.Text = "响应状态:" + strconv.FormatInt(hunterJR.Code, 10)
-			hunterReturnCode.Refresh()
+			hSearchDataSize.Text = "共" + strconv.FormatInt(hunterJR.Data.Total, 10) + "条资产，用时" + strconv.FormatInt(hunterJR.Data.Time, 10)
+			hSearchDataSize.Refresh()
 		}
 	})
 	deleteButtonHunter := widget.NewButtonWithIcon("清空", theme.CancelIcon(), func() {
@@ -401,7 +381,7 @@ func myApp() {
 	configItemHunter := container.NewHBox(
 		searchTime,
 		assets,
-		statusCode,
+		dataDeDuplication,
 		layout.NewSpacer(), container.NewHBox(
 			hunterSurplus,
 			widget.NewButtonWithIcon("提示", theme.InfoIcon(), func() {
@@ -430,7 +410,7 @@ func myApp() {
 	)
 
 	adjustPageNumHunter := container.NewBorder(nil, nil, nil, container.NewHBox(
-		hunterReturnCode,
+		hSearchDataSize,
 		hPageNum,
 		widget.NewButtonWithIcon("", theme.MediaSkipPreviousIcon(), func() {
 			p, _ := strconv.Atoi(currentPageHunter.Text)
@@ -796,13 +776,13 @@ func createFile() {
 		defer f.Close()
 	}
 	// 创建结果存放文件
-	f, err := os.Stat("result")
+	_, err = os.Stat("./result")
 	if err != nil {
 		os.Mkdir("result", 0666)
 		os.Mkdir("result/Hunter", 0666)
 		os.Mkdir("result/FOFA", 0666)
 	}
-	f.IsDir()
+
 }
 
 func fofaBaseEncode(str string) string {
