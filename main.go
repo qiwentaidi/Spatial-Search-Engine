@@ -1,13 +1,15 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"regexp"
+	"sse/commom"
+	"sse/plugins"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/data/validation"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
@@ -102,9 +105,10 @@ type FOFAJsonResult struct {
 // 设置窗口界面
 func myApp() {
 	a := app.New()
-	w := a.NewWindow("Spatial Search Engine 1.1 by qiwent@idi")
+	w := a.NewWindow("Spatial Search Engine 1.2 by qiwent@idi")
+	w.SetIcon(theme.FyneLogo())
 	w.Resize(fyne.NewSize(800, 500))
-	/*===================================================读取配置接口========================================================*/
+	// 5. 配置API读取、存储
 	path, err := os.Getwd()
 	if err != nil {
 		panic(err)
@@ -113,7 +117,6 @@ func myApp() {
 	configYaml.AddConfigPath(path)     //设置读取的文件路径
 	configYaml.SetConfigName("config") //设置读取的文件名
 	configYaml.SetConfigType("yaml")   //设置文件的类型
-	//尝试进行读取,不加就读不出来
 	if err := configYaml.ReadInConfig(); err != nil {
 		panic(err)
 	}
@@ -147,51 +150,41 @@ func myApp() {
 	} else {
 		fofaKey.Text = ""
 	}
-	// layout.NewFormLayout() 用于两列网格布局，第一列大小取最小值，第二列大小填充为最大值
-	config := container.New(layout.NewFormLayout(),
-		container.NewVBox(
-			widget.NewLabel("hunter api:"),
-			widget.NewLabel("hunter key:"),
-			widget.NewLabel("fofa api:"),
-			widget.NewLabel("fofa email:"),
-			widget.NewLabel("fofa key:"),
-			widget.NewButton("确认", func() {
-				f, err := os.OpenFile("./config.yaml", os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0666)
-				if err != nil {
-					panic(err)
-				} else {
-					io.WriteString(f, "hunter:\n")
-					io.WriteString(f, " api: "+hunterApi.Text+"\n")
-					io.WriteString(f, " key: "+hunterKey.Text+"\n")
-					io.WriteString(f, "fofa:\n")
-					io.WriteString(f, " api: "+fofaApi.Text+"\n")
-					io.WriteString(f, " email: "+fofaEmail.Text+"\n")
-					io.WriteString(f, " key: "+fofaKey.Text)
-				}
-				f.Close()
-			}),
-		),
-		container.NewVBox(
-			hunterApi,
-			hunterKey,
-			fofaApi,
-			fofaEmail,
-			fofaKey,
-			widget.NewButton("重置", func() {
-				hunterApi.Text = ""
-				hunterKey.Text = ""
-				fofaApi.Text = ""
-				fofaEmail.Text = ""
-				fofaKey.Text = ""
-				hunterApi.Refresh()
-				hunterKey.Refresh()
-				fofaApi.Refresh()
-				fofaEmail.Refresh()
-				fofaKey.Refresh()
-			}),
-		),
+	config := widget.NewForm(
+		widget.NewFormItem("hunter api:", hunterApi),
+		widget.NewFormItem("hunter key:", hunterKey),
+		widget.NewFormItem("fofa api:", fofaApi),
+		widget.NewFormItem("fofa email:", fofaEmail),
+		widget.NewFormItem("fofa key:", fofaKey),
 	)
-	// hunter查询语法
+	config.OnSubmit = func() {
+		f, err := os.OpenFile("./config.yaml", os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0666)
+		if err != nil {
+			panic(err)
+		} else {
+			io.WriteString(f, "hunter:\n")
+			io.WriteString(f, " api: "+hunterApi.Text+"\n")
+			io.WriteString(f, " key: "+hunterKey.Text+"\n")
+			io.WriteString(f, "fofa:\n")
+			io.WriteString(f, " api: "+fofaApi.Text+"\n")
+			io.WriteString(f, " email: "+fofaEmail.Text+"\n")
+			io.WriteString(f, " key: "+fofaKey.Text)
+		}
+		f.Close()
+	}
+	config.OnCancel = func() {
+		hunterApi.Text = ""
+		hunterKey.Text = ""
+		fofaApi.Text = ""
+		fofaEmail.Text = ""
+		fofaKey.Text = ""
+		hunterApi.Refresh()
+		hunterKey.Refresh()
+		fofaApi.Refresh()
+		fofaEmail.Refresh()
+		fofaKey.Refresh()
+	}
+	/*==========================================2.hunter查询语法====================================================*/
 	ADSearchHunter := widget.NewAccordion()
 	adSearchHunter := container.New(layout.NewFormLayout(),
 		container.NewVBox(
@@ -215,355 +208,6 @@ func myApp() {
 	)
 	item := widget.NewAccordionItem("搜索技巧", adSearchHunter)
 	ADSearchHunter.Append(item)
-	/*===========================================================END读取配置====================================================*/
-	/*===========================================================组件====================================================*/
-	searchTime := widget.NewSelect([]string{"最近一个月", "最近半年", "最近一年"}, nil)
-	searchTime.SetSelected("最近一个月")
-	hPageNum := widget.NewSelect([]string{"10条/页", "50条/页", "100条/页"}, nil)
-	hPageNum.SetSelected("10条/页")
-	fPageNum := widget.NewSelect([]string{"100条/页", "500条/页", "1000条/页", "10000条/页"}, nil)
-	fPageNum.SetSelected("100条/页")
-	currentPageHunter := widget.NewEntry()
-	currentPageHunter.Text = "1"
-	currentPageFOFA := widget.NewEntry()
-	currentPageFOFA.Text = "1"
-	assets := widget.NewSelect([]string{"全部资产", "web服务资产"}, nil)
-	assets.SetSelected("web服务资产")
-	resultHunterData := [][]string{
-		{"序号", "URL", "IP", "端口/服务", "域名", "应用/组件", "站点标题", "状态码", "ICP备案企业", "地理位置", "更新时间"},
-	}
-	resultFOFAData := [][]string{
-		{"序号", "HOST", "标题", "IP", "端口", "域名", "协议", "Server指纹", "地理位置", "备案号"},
-	}
-	resultHunterShow := widget.NewTable(
-		func() (int, int) {
-			return len(resultHunterData), len(resultHunterData[0])
-		},
-		func() fyne.CanvasObject {
-			return widget.NewEntry()
-		},
-		func(id widget.TableCellID, o fyne.CanvasObject) {
-			entry := o.(*widget.Entry)
-			entry.SetText(resultHunterData[id.Row][id.Col])
-		},
-	)
-	resultHunterShow.SetColumnWidth(0, 50)
-	resultHunterShow.SetColumnWidth(1, 250)
-	resultHunterShow.SetColumnWidth(2, 150)
-	resultHunterShow.SetColumnWidth(3, 100)
-	resultHunterShow.SetColumnWidth(4, 200)
-	resultHunterShow.SetColumnWidth(5, 200)
-	resultHunterShow.SetColumnWidth(6, 200)
-	resultHunterShow.SetColumnWidth(7, 60)
-	resultHunterShow.SetColumnWidth(8, 200)
-	resultHunterShow.SetColumnWidth(9, 150)
-	resultHunterShow.SetColumnWidth(10, 150)
-	for i := 0; i < 10; i++ {
-		resultHunterShow.SetRowHeight(i, 40)
-	}
-	resultFOFAShow := widget.NewTable(
-		func() (int, int) {
-			return len(resultFOFAData), len(resultFOFAData[0])
-		},
-		func() fyne.CanvasObject {
-			return widget.NewEntry()
-		},
-		func(id widget.TableCellID, o fyne.CanvasObject) {
-			entry := o.(*widget.Entry)
-			entry.SetText(resultFOFAData[id.Row][id.Col])
-		},
-	)
-	resultFOFAShow.SetColumnWidth(0, 50)
-	resultFOFAShow.SetColumnWidth(1, 250)
-	resultFOFAShow.SetColumnWidth(2, 200)
-	resultFOFAShow.SetColumnWidth(3, 150)
-	resultFOFAShow.SetColumnWidth(4, 60)
-	resultFOFAShow.SetColumnWidth(5, 200)
-	resultFOFAShow.SetColumnWidth(6, 70)
-	resultFOFAShow.SetColumnWidth(7, 100)
-	resultFOFAShow.SetColumnWidth(8, 150)
-	resultFOFAShow.SetColumnWidth(9, 150)
-	resultFOFAShow.SetColumnWidth(10, 100)
-	for i := 0; i < len(resultFOFAData); i++ {
-		resultFOFAShow.SetRowHeight(i, 40)
-	}
-	hunterSurplus := widget.NewLabel("")
-	hSearchDataSize := widget.NewLabel("")
-	selfLevel := widget.NewLabel("")
-	searchDataSize := widget.NewLabel("")
-	deDuplication := "false"
-	dataDeDuplication := widget.NewCheck("数据去重", func(b bool) {
-		if b {
-			deDuplication = "true"
-		} else {
-			deDuplication = "false"
-		}
-	})
-	//ipTag := widget.NewSelect([]string{"11", "22"}, nil)
-	/*===========================================================END====================================================*/
-	/*===========================================================hunter搜索接口====================================================*/
-	search1 := widget.NewEntry()
-	search1.Text = "Search..."
-	searchButtonHunter := widget.NewButtonWithIcon("查询", theme.SearchIcon(), func() {
-		resultHunterData = resultHunterData[:1]
-		currentPageHunter.Refresh()
-		t := time.Now()                         // 获取当前时间
-		beforeMonth := t.AddDate(0, -1, 0)      // 一个月前的日期
-		beforeHalfyear := t.AddDate(0, 0, -179) // 半年前的日期
-		beforeYear := t.AddDate(-1, 0, 0)       // 一年前的日期
-		var selectTime, selectPage, selectAssets string
-		/*======================================================标签内容获取===================================================*/
-		switch searchTime.Selected {
-		case "最近一个月":
-			selectTime = beforeMonth.Format("2006-01-02")
-		case "最近半年":
-			selectTime = beforeHalfyear.Format("2006-01-02")
-		case "最近一年":
-			selectTime = beforeYear.Format("2006-01-02")
-		}
-		switch hPageNum.Selected {
-		case "10条/页":
-			selectPage = "10"
-		case "50条/页":
-			selectPage = "50"
-		case "100条/页":
-			selectPage = "100"
-		}
-		switch assets.Selected {
-		case "全部资产":
-			selectAssets = "3"
-		case "web服务资产":
-			selectAssets = "1"
-		}
-		/*======================================================END===================================================*/
-		addressHunter := hunterApi.Text + "/openApi/search?api-key=" + hunterKey.Text + "&search=" + hunterBaseEncode(search1.Text) + "&page=" +
-			currentPageHunter.Text + "&page_size=" + selectPage + "&is_web=" + selectAssets + "&port_filter=" + deDuplication + "&start_time=" + selectTime + "&end_time=" + t.Format("2006-01-02")
-		fmt.Printf("addressHunter: %v\n", addressHunter)
-		r, err := http.Get(addressHunter)
-		if err != nil {
-			panic(err)
-		}
-		b, _ := io.ReadAll(r.Body)
-		defer r.Body.Close()
-		var hunterJR HunterJsonResult
-		json.Unmarshal([]byte(string(b)), &hunterJR)
-		asse := ""
-		p, _ := strconv.Atoi(currentPageHunter.Text)
-		size, _ := strconv.Atoi(selectPage)
-		if len(hunterJR.Data.Arr) == 0 {
-			dialog.ShowInformation("提示", "查询数据结果为空", w)
-			hunterSurplus.Text = hunterJR.Data.RestQuota
-			hunterSurplus.Refresh()
-		} else {
-			for i := 0; i < size; i++ {
-				for _, v := range hunterJR.Data.Arr[i].Component {
-					asse = asse + v.Name + v.Version + " "
-				}
-				resultHunterData = append(resultHunterData, []string{
-					strconv.Itoa(10*(p-1) + i + 1), hunterJR.Data.Arr[i].URL, hunterJR.Data.Arr[i].IP, strconv.FormatInt(hunterJR.Data.Arr[i].Port, 10) + "/" + hunterJR.Data.Arr[i].Protocol,
-					hunterJR.Data.Arr[i].Domain, asse, hunterJR.Data.Arr[i].WebTitle, strconv.FormatInt(hunterJR.Data.Arr[i].StatusCode, 10), hunterJR.Data.Arr[i].Company,
-					hunterJR.Data.Arr[i].Country + "" + hunterJR.Data.Arr[i].Province + "" + hunterJR.Data.Arr[i].City, hunterJR.Data.Arr[i].UpdatedAt,
-				})
-				asse = ""
-			}
-			resultHunterShow.Refresh()
-			hunterSurplus.Text = hunterJR.Data.RestQuota
-			hunterSurplus.Refresh()
-			hSearchDataSize.Text = "共" + strconv.FormatInt(hunterJR.Data.Total, 10) + "条资产，用时" + strconv.FormatInt(hunterJR.Data.Time, 10)
-			hSearchDataSize.Refresh()
-		}
-	})
-	deleteButtonHunter := widget.NewButtonWithIcon("清空", theme.CancelIcon(), func() {
-		search1.Text = ""
-		search1.Refresh()
-	})
-	headerHunter := container.NewBorder(nil, nil, nil, container.NewHBox(searchButtonHunter, deleteButtonHunter), search1)
-	configItemHunter := container.NewHBox(
-		searchTime,
-		assets,
-		dataDeDuplication,
-		layout.NewSpacer(), container.NewHBox(
-			hunterSurplus,
-			widget.NewButtonWithIcon("提示", theme.InfoIcon(), func() {
-				dialog.ShowInformation("提示", "API接口查询暂不支持资产标签分类,以及IP过滤功能", w)
-			}),
-			widget.NewButtonWithIcon("数据导出", theme.MailForwardIcon(), func() {
-				if len(resultHunterData) > 1 {
-					fileName := "./result/Hunter/assets" + "_" + strconv.FormatInt(time.Now().Unix(), 10) + ".csv"
-					os.Create(fileName)
-					file, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR, os.ModePerm)
-					if err != nil {
-						panic(err)
-					}
-					defer file.Close()
-					// 写入UTF-8 BOM，防止中文乱码
-					file.WriteString("\xEF\xBB\xBF")
-					w := csv.NewWriter(file)
-					w.Write(resultHunterData[0])
-					// 写文件需要flush，不然缓存满了，后面的就写不进去了，只会写一部分
-					for i := 1; i < len(resultHunterData); i++ {
-						w.Write(resultHunterData[i])
-					}
-					w.Flush()
-				}
-			})),
-	)
-
-	adjustPageNumHunter := container.NewBorder(nil, nil, nil, container.NewHBox(
-		hSearchDataSize,
-		hPageNum,
-		widget.NewButtonWithIcon("", theme.MediaSkipPreviousIcon(), func() {
-			p, _ := strconv.Atoi(currentPageHunter.Text)
-			if p > 1 {
-				currentPageHunter.Text = strconv.Itoa(p - 1)
-				currentPageHunter.Refresh()
-			}
-		}),
-		currentPageHunter,
-		widget.NewButtonWithIcon("", theme.MediaSkipNextIcon(), func() {
-			p, _ := strconv.Atoi(currentPageHunter.Text)
-			if p >= 1 {
-				currentPageHunter.Text = strconv.Itoa(p + 1)
-				currentPageHunter.Refresh()
-			}
-		}),
-	))
-	hunter := container.NewBorder(container.NewVBox(headerHunter, configItemHunter), adjustPageNumHunter, nil, nil, resultHunterShow)
-	// fofa搜索接口
-	search2 := widget.NewEntry()
-	search2.Text = "Search..."
-	searchButtonFOFA := widget.NewButtonWithIcon("查询", theme.SearchIcon(), func() {
-		resultFOFAData = resultFOFAData[:1]
-		// 请求个人用户数据
-		selfInfo := fofaApi.Text + "/api/v1/info/my?email=" + fofaEmail.Text + "&key=" + fofaKey.Text
-		r, err := http.Get(selfInfo)
-		if err != nil {
-			panic(err)
-		}
-		b, _ := io.ReadAll(r.Body)
-		defer r.Body.Close()
-		var selfIF SelfInfoFOFA
-		json.Unmarshal([]byte(string(b)), &selfIF)
-		vipLevel := selfIF.VipLevel
-		switch vipLevel {
-		case 0:
-			selfLevel.Text = "普通用户"
-		case 1:
-			selfLevel.Text = "普通会员"
-		case 2:
-			selfLevel.Text = "高级会员"
-		case 3:
-			selfLevel.Text = "企业会员"
-		}
-		selfLevel.Text = "当前用户为:" + selfLevel.Text
-		selfLevel.Refresh()
-		// 请求查询数据
-		selectPage := ""
-		switch fPageNum.Selected {
-		case "100条/页":
-			selectPage = "100"
-		case "500条/页":
-			selectPage = "500"
-		case "1000条/页":
-			selectPage = "1000"
-		case "10000条/页":
-			selectPage = "10000"
-		}
-		addressFOFA := fofaApi.Text + "/api/v1/search/all?email=" + fofaEmail.Text + "&key=" + fofaKey.Text + "&qbase64=" +
-			fofaBaseEncode(search2.Text) + "&page=" + currentPageFOFA.Text + "&size=" + selectPage +
-			"&fields=host,title,ip,domain,port,protocol,banner,country_name,region,city,icp"
-		r1, err1 := http.Get(addressFOFA)
-		if err1 != nil {
-			panic(err1)
-		}
-		defer r1.Body.Close()
-		b1, _ := io.ReadAll(r1.Body)
-		var fofaJT FOFAJsonResult
-		json.Unmarshal([]byte(string(b1)), &fofaJT)
-		searchDataSize.Text = "当前查询结果数量:" + strconv.FormatInt(fofaJT.Size, 10) + "条,目前已显示" + selectPage + "条"
-		searchDataSize.Refresh()
-		p, _ := strconv.ParseInt(selectPage, 10, 64)
-		j, _ := strconv.Atoi(currentPageFOFA.Text)
-		if fofaJT.Error {
-			dialog.ShowInformation("提示", fofaJT.Errmsg, w)
-		} else {
-			if fofaJT.Size > 0 {
-				if fofaJT.Size >= p {
-					for i := 0; i < int(p); i++ {
-						resultFOFAData = append(resultFOFAData, []string{
-							strconv.Itoa(10*(j-1) + i + 1), fofaJT.Results[i][0], fofaJT.Results[i][1], fofaJT.Results[i][2],
-							fofaJT.Results[i][4], fofaJT.Results[i][3], fofaJT.Results[i][5], fofaJT.Results[i][6], fofaJT.Results[i][7] +
-								" " + fofaJT.Results[i][8] + " " + fofaJT.Results[i][9], fofaJT.Results[i][10],
-						})
-					}
-				} else {
-					for i := 0; i < int(fofaJT.Size); i++ {
-						resultFOFAData = append(resultFOFAData, []string{
-							strconv.Itoa(10*(j-1) + i + 1), fofaJT.Results[i][0], fofaJT.Results[i][1], fofaJT.Results[i][2],
-							fofaJT.Results[i][4], fofaJT.Results[i][3], fofaJT.Results[i][5], fofaJT.Results[i][6], fofaJT.Results[i][7] +
-								" " + fofaJT.Results[i][8] + " " + fofaJT.Results[i][9], fofaJT.Results[i][10],
-						})
-					}
-				}
-
-			} else {
-				dialog.ShowInformation("提示", "未查询到数据结果", w)
-			}
-		}
-	})
-	deleteButtonFOFA := widget.NewButtonWithIcon("清空", theme.CancelIcon(), func() {
-		search2.Text = ""
-		search2.Refresh()
-	})
-
-	configItemFOFA := container.NewHBox(
-		selfLevel,
-		layout.NewSpacer(), container.NewHBox(
-			widget.NewButtonWithIcon("提示", theme.InfoIcon(), func() {
-				dialog.ShowInformation("提示", "本工具不提供支持企业会员特权专项如:\n蜜罐、其他数据排除，FID字段查询等\n\nFOFA暂不支持domain=\"gov.cn\"方式直接查询全部政府域名\n但支持domain=\"hangzhou.gov.cn\"查询子域名", w)
-			}),
-			widget.NewButtonWithIcon("数据导出", theme.MailForwardIcon(), func() {
-				fileName := "./result/FOFA/" + search2.Text + "-" + strconv.FormatInt(time.Now().Unix(), 10) + ".csv"
-				os.Create(fileName)
-				file, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR, os.ModePerm)
-				if err != nil {
-					panic(err)
-				}
-				defer file.Close()
-				// 写入UTF-8 BOM，防止中文乱码
-				file.WriteString("\xEF\xBB\xBF")
-				w := csv.NewWriter(file)
-				w.Write(resultFOFAData[0])
-				// 写文件需要flush，不然缓存满了，后面的就写不进去了，只会写一部分
-				for i := 1; i < len(resultFOFAData); i++ {
-					w.Write(resultFOFAData[i])
-				}
-				w.Flush()
-			})),
-	)
-
-	headerFOFA := container.NewBorder(nil, nil, nil, container.NewHBox(searchButtonFOFA, deleteButtonFOFA), search2)
-	adjustPageNumFOFA := container.NewBorder(nil, nil, nil, container.NewHBox(
-		searchDataSize,
-		fPageNum,
-		widget.NewButtonWithIcon("", theme.MediaSkipPreviousIcon(), func() {
-			p, _ := strconv.Atoi(currentPageFOFA.Text)
-			if p > 1 {
-				currentPageFOFA.Text = strconv.Itoa(p - 1)
-				currentPageFOFA.Refresh()
-			}
-		}),
-		currentPageFOFA,
-		widget.NewButtonWithIcon("", theme.MediaSkipNextIcon(), func() {
-			p, _ := strconv.Atoi(currentPageFOFA.Text)
-			if p >= 1 {
-				currentPageFOFA.Text = strconv.Itoa(p + 1)
-				currentPageFOFA.Refresh()
-			}
-		}),
-	))
-	fofa := container.NewBorder(container.NewVBox(headerFOFA, configItemFOFA), adjustPageNumFOFA, nil, nil, resultFOFAShow)
-	/*===================================================Hunter查询语法=========================================================*/
 	dataHunter := [][]string{
 		{"语法分类", "语法内容", "语法说明"},
 		{"IP", "ip=\"1.1.1.1\"", "搜索IP为 ”1.1.1.1”的资产"},
@@ -640,8 +284,7 @@ func myApp() {
 	syntaxTableHunter.SetColumnWidth(1, 300)
 	syntaxTableHunter.SetColumnWidth(2, 350)
 	hunterSyntax := container.NewBorder(ADSearchHunter, nil, nil, nil, syntaxTableHunter)
-	/*===================================================END查询语法=========================================================*/
-	/*===================================================FOFA查询语法=======================================================*/
+	/*==========================================4.fofa查询语法====================================================*/
 	title := widget.NewLabel("")
 	title.Text = "直接输入查询语句,将从标题,html内容,http头信息,url字段中搜索;\n如果查询表达式有多个与或关系,尽量在外面用（）包含起来；\n新增==完全匹配的符号,可以加快搜索速度,比如查找qq.com所有host,可以是domain==qq.com"
 	title.Wrapping = fyne.TextWrapBreak
@@ -743,65 +386,452 @@ func myApp() {
 	itemFOFA := widget.NewAccordionItem("高级搜索", adSearchFOFA)
 	ADSearchFOFA.Append(itemFOFA)
 	fofaSyntax := container.NewBorder(ADSearchFOFA, title, nil, nil, syntaxTableFOFA)
-	/*====================================================END查询语法=======================================================*/
+	/*==========================================1.hunter搜索查询====================================================*/
+	search1 := widget.NewEntry()
+	search1.PlaceHolder = "Search..."
+	search1.ActionItem = widget.NewButtonWithIcon("", theme.CancelIcon(), func() {
+		search1.Text = ""
+		search1.Refresh()
+	})
+	searchTime := widget.NewSelect([]string{"最近一个月", "最近半年", "最近一年"}, nil)
+	searchTime.SetSelected("最近一个月")
+	hPageNum := widget.NewSelect([]string{"10条/页", "50条/页", "100条/页"}, nil)
+	hPageNum.SetSelected("10条/页")
+	assets := widget.NewSelect([]string{"全部资产", "web服务资产"}, nil)
+	assets.SetSelected("web服务资产")
+	deDuplication := "false"
+	dataDeDuplication := widget.NewCheck("数据去重", func(b bool) {
+		if b {
+			deDuplication = "true"
+		} else {
+			deDuplication = "false"
+		}
+	})
+	resultHunterData := [][]string{
+		{"序号", "URL", "IP", "端口/服务", "域名", "应用/组件", "站点标题", "状态码", "ICP备案企业", "地理位置", "更新时间"},
+	}
+	resultHunterShow := widget.NewTable(
+		func() (int, int) {
+			return len(resultHunterData), len(resultHunterData[0])
+		},
+		func() fyne.CanvasObject {
+			return widget.NewEntry()
+		},
+		func(id widget.TableCellID, o fyne.CanvasObject) {
+			entry := o.(*widget.Entry)
+			entry.SetText(resultHunterData[id.Row][id.Col])
+		},
+	)
+	resultHunterShow.SetColumnWidth(0, 50)
+	resultHunterShow.SetColumnWidth(1, 250)
+	resultHunterShow.SetColumnWidth(2, 150)
+	resultHunterShow.SetColumnWidth(3, 100)
+	resultHunterShow.SetColumnWidth(4, 200)
+	resultHunterShow.SetColumnWidth(5, 200)
+	resultHunterShow.SetColumnWidth(6, 200)
+	resultHunterShow.SetColumnWidth(7, 60)
+	resultHunterShow.SetColumnWidth(8, 200)
+	resultHunterShow.SetColumnWidth(9, 150)
+	resultHunterShow.SetColumnWidth(10, 150)
+	for i := 0; i < 10; i++ {
+		resultHunterShow.SetRowHeight(i, 40)
+	}
+	currentPageHunter := widget.NewEntry()
+	currentPageHunter.Text = "1"
+	hunterSurplus := widget.NewLabel("")
+	hSearchDataSize := widget.NewLabel("")
+	// 查询功能实现
+	searchButtonHunter := widget.NewButtonWithIcon("查询", theme.SearchIcon(), func() {
+		resultHunterData = resultHunterData[:1]
+		currentPageHunter.Refresh()
+		t := time.Now()                         // 获取当前时间
+		beforeMonth := t.AddDate(0, -1, 0)      // 一个月前的日期
+		beforeHalfyear := t.AddDate(0, 0, -179) // 半年前的日期
+		beforeYear := t.AddDate(-1, 0, 0)       // 一年前的日期
+		var selectTime, selectPage, selectAssets string
+		switch searchTime.Selected {
+		case "最近一个月":
+			selectTime = beforeMonth.Format("2006-01-02")
+		case "最近半年":
+			selectTime = beforeHalfyear.Format("2006-01-02")
+		case "最近一年":
+			selectTime = beforeYear.Format("2006-01-02")
+		}
+		switch hPageNum.Selected {
+		case "10条/页":
+			selectPage = "10"
+		case "50条/页":
+			selectPage = "50"
+		case "100条/页":
+			selectPage = "100"
+		}
+		switch assets.Selected {
+		case "全部资产":
+			selectAssets = "3"
+		case "web服务资产":
+			selectAssets = "1"
+		}
+		addressHunter := hunterApi.Text + "/openApi/search?api-key=" + hunterKey.Text + "&search=" + commom.HunterBaseEncode(search1.Text) + "&page=" +
+			currentPageHunter.Text + "&page_size=" + selectPage + "&is_web=" + selectAssets + "&port_filter=" + deDuplication + "&start_time=" + selectTime + "&end_time=" + t.Format("2006-01-02")
+		r, err := http.Get(addressHunter)
+		if err != nil {
+			panic(err)
+		}
+		b, _ := io.ReadAll(r.Body)
+		defer r.Body.Close()
+		var hunterJR HunterJsonResult
+		json.Unmarshal([]byte(string(b)), &hunterJR)
+		asse := ""
+		p, _ := strconv.Atoi(currentPageHunter.Text)
+		size, _ := strconv.Atoi(selectPage)
+		if len(hunterJR.Data.Arr) == 0 {
+			dialog.ShowInformation("提示", "查询数据结果为空", w)
+			hunterSurplus.Text = hunterJR.Data.RestQuota
+			hunterSurplus.Refresh()
+		} else {
+			for i := 0; i < size; i++ {
+				for _, v := range hunterJR.Data.Arr[i].Component {
+					asse = asse + v.Name + v.Version + " "
+				}
+				resultHunterData = append(resultHunterData, []string{
+					strconv.Itoa(10*(p-1) + i + 1), hunterJR.Data.Arr[i].URL, hunterJR.Data.Arr[i].IP, strconv.FormatInt(hunterJR.Data.Arr[i].Port, 10) + "/" + hunterJR.Data.Arr[i].Protocol,
+					hunterJR.Data.Arr[i].Domain, asse, hunterJR.Data.Arr[i].WebTitle, strconv.FormatInt(hunterJR.Data.Arr[i].StatusCode, 10), hunterJR.Data.Arr[i].Company,
+					hunterJR.Data.Arr[i].Country + "" + hunterJR.Data.Arr[i].Province + "" + hunterJR.Data.Arr[i].City, hunterJR.Data.Arr[i].UpdatedAt,
+				})
+				asse = ""
+			}
+			resultHunterShow.Refresh()
+			hunterSurplus.Text = hunterJR.Data.RestQuota
+			hunterSurplus.Refresh()
+			hSearchDataSize.Text = "共" + strconv.FormatInt(hunterJR.Data.Total, 10) + "条资产，用时" + strconv.FormatInt(hunterJR.Data.Time, 10)
+			hSearchDataSize.Refresh()
+		}
+	})
+
+	headerHunter := container.NewBorder(nil, nil, nil, searchButtonHunter, search1)
+	configItemHunter := container.NewHBox(
+		searchTime,
+		assets,
+		dataDeDuplication,
+		layout.NewSpacer(), container.NewHBox(
+			hunterSurplus,
+			widget.NewButtonWithIcon("提示", theme.InfoIcon(), func() {
+				dialog.ShowInformation("提示", "API接口查询暂不支持资产标签分类功能", w)
+			}),
+			widget.NewButtonWithIcon("数据导出", theme.MailForwardIcon(), func() {
+				if len(resultHunterData) > 1 {
+					fileName := fmt.Sprintf("./result/Hunter/assets_%s.csv", strconv.FormatInt(time.Now().Unix(), 10))
+					os.Create(fileName)
+					file, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR, os.ModePerm)
+					if err != nil {
+						panic(err)
+					}
+					defer file.Close()
+					// 写入UTF-8 BOM，防止中文乱码
+					file.WriteString("\xEF\xBB\xBF")
+					w := csv.NewWriter(file)
+					w.Write(resultHunterData[0])
+					// 写文件需要flush，不然缓存满了，后面的就写不进去了，只会写一部分
+					for i := 1; i < len(resultHunterData); i++ {
+						w.Write(resultHunterData[i])
+					}
+					w.Flush()
+				}
+			})),
+	)
+	adjustPageNumHunter := container.NewBorder(nil, nil, nil, container.NewHBox(
+		hSearchDataSize,
+		hPageNum,
+		widget.NewButtonWithIcon("", theme.MediaSkipPreviousIcon(), func() {
+			p, _ := strconv.Atoi(currentPageHunter.Text)
+			if p > 1 {
+				currentPageHunter.Text = strconv.Itoa(p - 1)
+				currentPageHunter.Refresh()
+			}
+		}),
+		currentPageHunter,
+		widget.NewButtonWithIcon("", theme.MediaSkipNextIcon(), func() {
+			p, _ := strconv.Atoi(currentPageHunter.Text)
+			if p >= 1 {
+				currentPageHunter.Text = strconv.Itoa(p + 1)
+				currentPageHunter.Refresh()
+			}
+		}),
+	))
+	hunter := container.NewBorder(container.NewVBox(headerHunter, configItemHunter), adjustPageNumHunter, nil, nil, resultHunterShow)
+	/*==========================================3.fofa搜索查询====================================================*/
+	search2 := widget.NewEntry()
+	search2.PlaceHolder = "Search..."
+	search2.ActionItem = widget.NewButtonWithIcon("", theme.CancelIcon(), func() {
+		search2.Text = ""
+		search2.Refresh()
+	})
+	fPageNum := widget.NewSelect([]string{"100条/页", "500条/页", "1000条/页", "10000条/页"}, nil)
+	fPageNum.SetSelected("100条/页")
+	currentPageFOFA := widget.NewEntry()
+	currentPageFOFA.Text = "1"
+	resultFOFAData := [][]string{
+		{"序号", "HOST", "标题", "IP", "端口", "域名", "协议", "Server指纹", "地理位置", "备案号"},
+	}
+	resultFOFAShow := widget.NewTable(
+		func() (int, int) {
+			return len(resultFOFAData), len(resultFOFAData[0])
+		},
+		func() fyne.CanvasObject {
+			return widget.NewEntry()
+		},
+		func(id widget.TableCellID, o fyne.CanvasObject) {
+			entry := o.(*widget.Entry)
+			entry.SetText(resultFOFAData[id.Row][id.Col])
+		},
+	)
+	resultFOFAShow.SetColumnWidth(0, 50)
+	resultFOFAShow.SetColumnWidth(1, 250)
+	resultFOFAShow.SetColumnWidth(2, 200)
+	resultFOFAShow.SetColumnWidth(3, 150)
+	resultFOFAShow.SetColumnWidth(4, 60)
+	resultFOFAShow.SetColumnWidth(5, 200)
+	resultFOFAShow.SetColumnWidth(6, 70)
+	resultFOFAShow.SetColumnWidth(7, 100)
+	resultFOFAShow.SetColumnWidth(8, 150)
+	resultFOFAShow.SetColumnWidth(9, 150)
+	resultFOFAShow.SetColumnWidth(10, 100)
+	for i := 0; i < len(resultFOFAData); i++ {
+		resultFOFAShow.SetRowHeight(i, 40)
+	}
+	selfLevel := widget.NewLabel("")
+	searchDataSize := widget.NewLabel("")
+	searchButtonFOFA := widget.NewButtonWithIcon("查询", theme.SearchIcon(), func() {
+		resultFOFAData = resultFOFAData[:1]
+		// 请求个人用户数据
+		selfInfo := fmt.Sprintf("%s/api/v1/info/my?email=%s&key=%s", fofaApi.Text, fofaEmail.Text, fofaKey.Text)
+		r, err := http.Get(selfInfo)
+		if err != nil {
+			panic(err)
+		}
+		b, _ := io.ReadAll(r.Body)
+		defer r.Body.Close()
+		var selfIF SelfInfoFOFA
+		json.Unmarshal([]byte(string(b)), &selfIF)
+		vipLevel := selfIF.VipLevel
+		switch vipLevel {
+		case 0:
+			selfLevel.Text = "普通用户"
+		case 1:
+			selfLevel.Text = "普通会员"
+		case 2:
+			selfLevel.Text = "高级会员"
+		case 3:
+			selfLevel.Text = "企业会员"
+		}
+		selfLevel.Text = "当前用户为:" + selfLevel.Text
+		selfLevel.Refresh()
+		// 请求查询数据
+		selectPage := ""
+		switch fPageNum.Selected {
+		case "100条/页":
+			selectPage = "100"
+		case "500条/页":
+			selectPage = "500"
+		case "1000条/页":
+			selectPage = "1000"
+		case "10000条/页":
+			selectPage = "10000"
+		}
+		addressFOFA := fofaApi.Text + "/api/v1/search/all?email=" + fofaEmail.Text + "&key=" + fofaKey.Text + "&qbase64=" +
+			commom.FofaBaseEncode(search2.Text) + "&page=" + currentPageFOFA.Text + "&size=" + selectPage +
+			"&fields=host,title,ip,domain,port,protocol,banner,country_name,region,city,icp"
+		r1, err1 := http.Get(addressFOFA)
+		if err1 != nil {
+			panic(err1)
+		}
+		defer r1.Body.Close()
+		b1, _ := io.ReadAll(r1.Body)
+		var fofaJT FOFAJsonResult
+		json.Unmarshal([]byte(string(b1)), &fofaJT)
+		searchDataSize.Text = fmt.Sprintf("当前查询结果数量:%s条,目前已显示%s条", strconv.FormatInt(fofaJT.Size, 10), selectPage)
+		searchDataSize.Refresh()
+		p, _ := strconv.ParseInt(selectPage, 10, 64)
+		j, _ := strconv.Atoi(currentPageFOFA.Text)
+		if fofaJT.Error {
+			dialog.ShowInformation("提示", fofaJT.Errmsg, w)
+		} else {
+			if fofaJT.Size > 0 {
+				if fofaJT.Size >= p {
+					for i := 0; i < int(p); i++ {
+						resultFOFAData = append(resultFOFAData, []string{
+							strconv.Itoa(10*(j-1) + i + 1), fofaJT.Results[i][0], fofaJT.Results[i][1], fofaJT.Results[i][2],
+							fofaJT.Results[i][4], fofaJT.Results[i][3], fofaJT.Results[i][5], fofaJT.Results[i][6], fofaJT.Results[i][7] +
+								" " + fofaJT.Results[i][8] + " " + fofaJT.Results[i][9], fofaJT.Results[i][10],
+						})
+					}
+				} else {
+					for i := 0; i < int(fofaJT.Size); i++ {
+						resultFOFAData = append(resultFOFAData, []string{
+							strconv.Itoa(10*(j-1) + i + 1), fofaJT.Results[i][0], fofaJT.Results[i][1], fofaJT.Results[i][2],
+							fofaJT.Results[i][4], fofaJT.Results[i][3], fofaJT.Results[i][5], fofaJT.Results[i][6], fofaJT.Results[i][7] +
+								" " + fofaJT.Results[i][8] + " " + fofaJT.Results[i][9], fofaJT.Results[i][10],
+						})
+					}
+				}
+
+			} else {
+				dialog.ShowInformation("提示", "未查询到数据结果", w)
+			}
+		}
+	})
+	configItemFOFA := container.NewHBox(
+		selfLevel,
+		layout.NewSpacer(), container.NewHBox(
+			widget.NewButtonWithIcon("提示", theme.InfoIcon(), func() {
+				dialog.ShowInformation("提示", "本工具不提供支持企业会员特权专项如:\n蜜罐、其他数据排除，FID字段查询等\n\nFOFA暂不支持domain=\"gov.cn\"方式直接查询全部政府域名\n但支持domain=\"hangzhou.gov.cn\"查询子域名", w)
+			}),
+			widget.NewButtonWithIcon("数据导出", theme.MailForwardIcon(), func() {
+				fileName := fmt.Sprintf("./result/FOFA/assets_%s.csv", strconv.FormatInt(time.Now().Unix(), 10))
+				os.Create(fileName)
+				file, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR, os.ModePerm)
+				if err != nil {
+					panic(err)
+				}
+				defer file.Close()
+				// 写入UTF-8 BOM，防止中文乱码
+				file.WriteString("\xEF\xBB\xBF")
+				w := csv.NewWriter(file)
+				w.Write(resultFOFAData[0])
+				// 写文件需要flush，不然缓存满了，后面的就写不进去了，只会写一部分
+				for i := 1; i < len(resultFOFAData); i++ {
+					w.Write(resultFOFAData[i])
+				}
+				w.Flush()
+			})),
+	)
+	headerFOFA := container.NewBorder(nil, nil, nil, searchButtonFOFA, search2)
+	adjustPageNumFOFA := container.NewBorder(nil, nil, nil, container.NewHBox(
+		searchDataSize,
+		fPageNum,
+		widget.NewButtonWithIcon("", theme.MediaSkipPreviousIcon(), func() {
+			p, _ := strconv.Atoi(currentPageFOFA.Text)
+			if p > 1 {
+				currentPageFOFA.Text = strconv.Itoa(p - 1)
+				currentPageFOFA.Refresh()
+			}
+		}),
+		currentPageFOFA,
+		widget.NewButtonWithIcon("", theme.MediaSkipNextIcon(), func() {
+			p, _ := strconv.Atoi(currentPageFOFA.Text)
+			if p >= 1 {
+				currentPageFOFA.Text = strconv.Itoa(p + 1)
+				currentPageFOFA.Refresh()
+			}
+		}),
+	))
+	fofa := container.NewBorder(container.NewVBox(headerFOFA, configItemFOFA), adjustPageNumFOFA, nil, nil, resultFOFAShow)
+	/*==========================================6.子域名暴破====================================================*/
+	domain := widget.NewEntry()
+	domain.PlaceHolder = "请输入域名"
+	domain.Validator = validation.NewRegexp(`[a-zA-Z0-9][-a-zA-Z0-9]{0,62}(\.[a-zA-Z0-9][-a-zA-Z0-9]{0,62})+\.?`, "")
+	filePath := widget.NewLabel("")
+	filePath.Alignment = fyne.TextAlignCenter
+	filePath.SetText("请选择子域名字典文件TXT")
+	resultSubdomainBurst := widget.NewMultiLineEntry()
+	subdomainSearchButton := widget.NewButtonWithIcon("解析", theme.SearchIcon(), func() {
+		go func() {
+			if domain.Text != "" {
+				if isOk, _ := regexp.MatchString(`[a-zA-Z0-9][-a-zA-Z0-9]{0,62}(\.[a-zA-Z0-9][-a-zA-Z0-9]{0,62})+\.?`, domain.Text); isOk {
+					resultSubdomainBurst.SetText("域名解析结果为：" + plugins.IPResolution(domain.Text))
+					resultSubdomainBurst.Refresh()
+				} else {
+					resultSubdomainBurst.SetText("域名错误")
+					resultSubdomainBurst.Refresh()
+				}
+			}
+		}()
+	})
+	importFile := widget.NewButtonWithIcon("导入", theme.DocumentIcon(), func() {
+		dialog.ShowFileOpen(func(uc fyne.URIReadCloser, err error) {
+			if uc != nil {
+				filePath.SetText(uc.URI().Path())
+			}
+		}, w)
+	})
+	subdomainBurstButton := widget.NewButtonWithIcon("暴破", theme.SearchReplaceIcon(), func() {
+		resultSubdomainBurst.Text = ""
+		start := time.Now().Unix()
+		go func() {
+			resultSubdomainBurst.SetText(plugins.SubdomainBurst(filePath.Text, domain.Text))
+			resultSubdomainBurst.Text += fmt.Sprintf("\n共用时:%ds", time.Now().Unix()-start)
+		}()
+		resultSubdomainBurst.Refresh()
+	})
+	searchSubdomain := container.NewBorder(nil, nil, nil, subdomainSearchButton, domain)
+	imports := container.NewBorder(nil, nil, nil, container.NewHBox(importFile, subdomainBurstButton), filePath)
+	headerSubdomain := container.NewBorder(searchSubdomain, imports, nil, nil)
+	subdomain := container.NewBorder(headerSubdomain, nil, nil, nil, resultSubdomainBurst)
+	/*==========================================7.端口扫描====================================================*/
+	t1 := []string{"1433", "1521", "3306", "5432", "6379", "9200", "11211", "27017"}
+	t2 := []string{"21", "22", "23", "25", "53", "80", "81", "110", "111", "123", "135", "139", "389", "443", "445", "465", "500", "515", "548", "623",
+		"636", "873", "902", "1080", "1099", "1433", "1434", "1521", "1883", "2049", "2181", "2375", "2379", "3128", "3306", "3389", "4730", "5222", "5432",
+		"5555", "5601", "5672", "5900", "5938", "5984", "6000", "6379", "7001", "7077", "8080", "8081", "8443", "8545", "8686", "9000", "9001", "9042", "9092",
+		"9100", "9200", "9418", "9999", "11211", "27017", "37777", "50000", "50070", "61616"}
+	t3 := []string{"1-65535"}
+	host := widget.NewMultiLineEntry()
+	host.PlaceHolder = "IP:192.168.1.1\n网段:192.168.1.1/24\n域名:www.baidu.com\n多个目标用换行或,分割"
+	ports := widget.NewEntry()
+	ports.PlaceHolder = "端口号"
+	ports.ActionItem = widget.NewButtonWithIcon("", theme.InfoIcon(), func() {
+		dialog.ShowInformation("提示", "端口扫描功能不会进行主机探活,即np方式进行扫描\n不设置并发或者超时参数时\n并发默认100Goroutine\n超时默认为3000ms\n减少超时参数可以明显提升扫描速度", w)
+	})
+	thread := widget.NewEntry()
+	thread.PlaceHolder = "并发"
+	timeout := widget.NewEntry()
+	timeout.PlaceHolder = "超时(ms)"
+	rg := widget.NewRadioGroup([]string{"数据库", "企业", "全端口", "自定义"}, func(s string) {
+		switch s {
+		case "数据库":
+			ports.Text = strings.Join(t1, ",")
+			ports.Refresh()
+		case "企业":
+			ports.Text = strings.Join(t2, ",")
+			ports.Refresh()
+		case "全端口":
+			ports.Text = strings.Join(t3, ",")
+			ports.Refresh()
+		case "自定义":
+			ports.Text = ""
+			ports.Refresh()
+		}
+	})
+	rg.Horizontal = true
+	resultPortScan := widget.NewMultiLineEntry()
+	scan := widget.NewButtonWithIcon("扫描", theme.SearchIcon(), func() {
+		resultPortScan.Text = ""
+		start := time.Now().Unix()
+		go func() {
+			s := plugins.PortScan(ports.Text, host.Text, thread.Text, timeout.Text)
+			resultPortScan.SetText(s)
+			resultPortScan.Text += fmt.Sprintf("共用时:%ds", time.Now().Unix()-start)
+		}()
+		resultPortScan.Refresh()
+	})
+	headerPortScan := container.NewBorder(nil, container.NewBorder(nil, rg, nil, nil, ports), nil,
+		container.NewBorder(container.New(layout.NewGridWrapLayout(fyne.NewSize(70, 35)), timeout, thread), scan, nil, nil), host)
+	portscan := container.NewBorder(headerPortScan, nil, nil, nil, resultPortScan)
+	/*====================================================总体布局=======================================================*/
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Hunter", hunter),
 		container.NewTabItem("H查询语法", hunterSyntax),
 		container.NewTabItem("FOFA", fofa),
 		container.NewTabItem("F查询语法", fofaSyntax),
 		container.NewTabItem("配置", config),
+		container.NewTabItem("子域名暴破", subdomain),
+		container.NewTabItem("端口扫描", portscan),
 	)
 	tabs.SetTabLocation(container.TabLocationLeading)
 	w.SetContent(tabs)
 	w.ShowAndRun()
 }
 
-// 创建配置文件
-func createFile() {
-	_, err := os.Stat("./config.yaml")
-	if err != nil {
-		os.Create("./config.yaml")
-		f, err := os.OpenFile("./config.yaml", os.O_APPEND, 0666)
-		if err != nil {
-			panic(err)
-		} else {
-			io.WriteString(f, "hunter:\n")
-			io.WriteString(f, " api: \n")
-			io.WriteString(f, " key: \n")
-			io.WriteString(f, "fofa: \n")
-			io.WriteString(f, " api: \n")
-			io.WriteString(f, " email: \n")
-			io.WriteString(f, " key: ")
-		}
-		defer f.Close()
-	}
-	// 创建结果存放文件
-	_, err = os.Stat("./result")
-	if err != nil {
-		os.Mkdir("result", 0666)
-		os.Mkdir("result/Hunter", 0666)
-		os.Mkdir("result/FOFA", 0666)
-	}
-
-}
-
-func fofaBaseEncode(str string) string {
-	sb64 := base64.StdEncoding.EncodeToString([]byte(str))
-	return sb64
-}
-
-func hunterBaseEncode(str string) string {
-	sb64 := base64.StdEncoding.EncodeToString([]byte(str))
-	sb64 = strings.Replace(strings.Replace(sb64, "+", "-", -1), "/", "_", -1)
-	if sb64[len(sb64)-1:] == "=" {
-		if sb64[len(sb64)-2:] != "==" {
-			sb64 = sb64[:len(sb64)-1]
-		}
-	}
-	return sb64
-}
-
 func main() {
-	createFile()
+	commom.CreateFile()
 	myApp()
 }
